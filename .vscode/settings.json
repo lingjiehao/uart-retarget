@@ -5,5 +5,5 @@
           },
     },
   "terminal.integrated.defaultProfile.windows": "GitBash",
-  "cortex-debug.variableUseNaturalFormat": false
+  "cortex-debug.variableUseNaturalFormat": true
 }

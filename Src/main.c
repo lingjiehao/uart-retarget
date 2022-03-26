@@ -50,18 +50,44 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
-// #ifdef __GNUC__
-// /* With GCC, small printf (option LD Linker->Libraries->Small printf
-//    set to 'Yes') calls __io_putchar() */
-// #define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
-// #else
-// #define PUTCHAR_PROTOTYPE int fputc(int ch, FILE *f)
-// #endif /* __GNUC__ */
+static bool is_keyup(void);
+static bool is_keydown(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+/*
+                            KEY=1*4       +-----------+
+        +---------------------------------+STATE_KEYUP|
+        |                                 +--+--------+
+        v                                    |     ^
++------------+                               |     |
+| STATE_IDLE |<------+                       |     |
++---+--------+       |                     KEY=0 KEY=1
+    |              KEY=1                     |     |
+    |                |                       |     |
+    |                |                       |     |
+  KEY=0              |                       v     |
+    |        +-------+--------+ KEY=0*4   +--------+-----------+
+    +------->|STATE_KEY_PRESS +---------->|STATE_KEY_LONGPRESS |
+             +----------------+           +-----------+--------+
+                                                ^     |
+                                                |     v
+                                             +--+----------+
+                                             |STATE_TIMEUP |
+                                             +-------------+
+KEY=0: 按键按下
+KEY=1: 按键抬起
+KEY=0*4: 连续4次检测到按键按下
+KEY=1*4: 连续4次检测到按键抬起
+ */
+enum {
+  STATE_IDLE,
+  STATE_KEY_PRESS,
+  STATE_KEY_LONGPRESS,
+  STATE_KEY_UP,
+  STATE_TIMEUP,
+};
 /* USER CODE END 0 */
 
 /**
@@ -99,47 +125,92 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  long i = 0;
-  SEGGER_RTT_ConfigUpBuffer(0, NULL, NULL, 0, SEGGER_RTT_MODE_BLOCK_IF_FIFO_FULL);
-
-  SEGGER_RTT_ConfigUpBuffer(0, NULL, NULL, 0, SEGGER_RTT_MODE_BLOCK_IF_FIFO_FULL);
-
-  SEGGER_RTT_WriteString(0, "SEGGER Real-Time-Terminal Sample\r\n\r\n");
-  SEGGER_RTT_WriteString(0, "###### Testing SEGGER_printf() ######\r\n");
-
-  SEGGER_RTT_printf(0, "printf Test: %%c,         'S' : %c.\r\n", 'S');
-  SEGGER_RTT_printf(0, "printf Test: %%5c,        'E' : %5c.\r\n", 'E');
-  SEGGER_RTT_printf(0, "printf Test: %%-5c,       'G' : %-5c.\r\n", 'G');
-  SEGGER_RTT_printf(0, "printf Test: %%5.3c,      'G' : %-5c.\r\n", 'G');
-  SEGGER_RTT_printf(0, "printf Test: %%.3c,       'E' : %-5c.\r\n", 'E');
-  SEGGER_RTT_printf(0, "printf Test: %%c,         'R' : %c.\r\n", 'R');
-
-  SEGGER_RTT_printf(0, "printf Test: %%s,      \"RTT\" : %s.\r\n", "RTT");
-  SEGGER_RTT_printf(0, "printf Test: %%s, \"RTT\\r\\nRocks.\" : %s.\r\n", "RTT\r\nRocks.");
-
-  SEGGER_RTT_printf(0, "printf Test: %%u,       12345 : %u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%+u,      12345 : %+u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%.3u,     12345 : %.3u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%.6u,     12345 : %.6u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%6.3u,    12345 : %6.3u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%8.6u,    12345 : %8.6u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%08u,     12345 : %08u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%08.6u,   12345 : %08.6u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%0u,      12345 : %0u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%-.6u,    12345 : %-.6u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%-6.3u,   12345 : %-6.3u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%-8.6u,   12345 : %-8.6u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%-08u,    12345 : %-08u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%-08.6u,  12345 : %-08.6u.\r\n", 12345);
-  SEGGER_RTT_printf(0, "printf Test: %%-0u,     12345 : %-0u.\r\n", 12345);
+  SEGGER_RTT_Init();
+#define DEBOUNCE_TIMES  4 /* 消抖时间 4 * 10ms */
+#define LONGPRESS_TH_MS  600 /* 触发长按的阈值 ms */
+#define LONGPRESS_INC_PERD_MS  100 /* 长按后每100ms自加一 */
+  int state = STATE_IDLE, debounce = DEBOUNCE_TIMES;
+  long val = 0;
+  uint32_t cur_ticks = 0, next_ticks = 0;
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-    HAL_Delay(1000);
-    printf("HLJ===%ld\r\n", i++);
+
+    switch (state) {
+    case STATE_IDLE:
+      // printf("Please press key...\n");
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+      if (is_keydown()) {
+        state = STATE_KEY_PRESS;
+        break;
+      }
+      break;
+
+    case STATE_KEY_PRESS:
+      debounce = DEBOUNCE_TIMES;
+      while (debounce) {
+        HAL_Delay(10);
+        debounce--;
+        if (is_keyup()) {
+          state = STATE_IDLE;
+          break;
+        }
+      }
+      if (!debounce) {
+        val++;
+        printf("Key short pressed, val=%ld\n", val);
+        state = STATE_KEY_LONGPRESS;
+        cur_ticks = HAL_GetTick();
+        next_ticks = LONGPRESS_TH_MS + cur_ticks;
+      }
+      break;
+
+    case STATE_KEY_LONGPRESS:
+      if (is_keyup()) {
+        state = STATE_KEY_UP;
+        break;
+      }
+      if (next_ticks < HAL_GetTick()) {
+        state = STATE_TIMEUP;
+        break;
+      }
+      break;
+
+    case STATE_TIMEUP:
+        val++;
+        printf("Key long pressed, val=%ld\n", val);
+        state = STATE_KEY_LONGPRESS;
+        cur_ticks = HAL_GetTick();
+        next_ticks = LONGPRESS_INC_PERD_MS + cur_ticks;
+        break;
+
+    case STATE_KEY_UP:
+      debounce = DEBOUNCE_TIMES;
+      while (debounce) {
+        HAL_Delay(10);
+        debounce--;
+        if (is_keydown()) {
+          state = STATE_KEY_LONGPRESS;
+          break;
+        }
+      }
+      if (!debounce) {
+        printf("Key released\n");
+        state = STATE_IDLE;
+      }
+      break;
+
+    default:
+      while(1) {
+        printf("Invalid state\n");
+        HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+        HAL_Delay(100);
+      }
+
+    }
+
   }
   /* USER CODE END 3 */
 }
@@ -262,19 +333,15 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-/**
-  * @brief  Retargets the C library printf function to the USART.
-  * @param  None
-  * @retval None
-  */
-// PUTCHAR_PROTOTYPE
-// {
-//   /* Place your implementation of fputc here */
-//   /* e.g. write a character to the LPUART1 and Loop until the end of transmission */
-//   HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, 0xFFFF);
+static bool is_keyup(void)
+{
+  return HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) != GPIO_PIN_RESET;
+}
 
-//   return ch;
-// }
+static bool is_keydown(void)
+{
+  return HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET;
+}
 /* USER CODE END 4 */
 
 /**
