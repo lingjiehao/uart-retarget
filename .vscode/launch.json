@@ -16,7 +16,19 @@
             "runToEntryPoint": "main",
             "servertype": "jlink",
             "svdFile": "${workspaceRoot}/STM32L4x6.svd",
-            "gdbPath": "D:/toolchain/gcc-arm-none-eabi-10.3-2021.10/bin/arm-none-eabi-gdb.exe"
+            "gdbPath": "D:/toolchain/gcc-arm-none-eabi-10.3-2021.10/bin/arm-none-eabi-gdb.exe",
+            //https://github.com/Marus/cortex-debug/wiki/SEGGER-RTT-support#examples-examples
+            "rttConfig": {
+                "enabled": true,
+                "address": "auto",
+                // "clearSearch": false    // OpenOCD users may have to un-comment this
+                "decoders": [
+                    {
+                        "port": 0,
+                        "type": "console"
+                    }
+                ]
+            }
         }
     ]
 }
